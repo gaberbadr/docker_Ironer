@@ -1,0 +1,62 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "${API_PORT}:8080"   # Expose API
+    depends_on:
+      db:
+        condition: service_healthy  
+    environment:
+      ASPNETCORE_ENVIRONMENT: "Production"   
+      ConnectionStrings__DefaultConnection: "Server=${DB_SERVER},1433;Database=${DB_NAME};User=${DB_USER};Password=${DB_PASSWORD};TrustServerCertificate=True;"
+      JWT__Key: "${JWT_KEY}"
+      JWT__Issuer: "${JWT_ISSUER}"
+      JWT__Audience: "${JWT_AUDIENCE}"
+      JWT__AccessTokenExpirationMinutes: "${JWT_ACCESS_TOKEN_EXPIRATION_MINUTES}"
+      JWT__RefreshTokenExpirationDays: "${JWT_REFRESH_TOKEN_EXPIRATION_DAYS}"
+      Smtp__Host: "${SMTP_HOST}"
+      Smtp__Port: "${SMTP_PORT}"
+      Smtp__Email: "${SMTP_EMAIL}"
+      Smtp__Password: "${SMTP_PASSWORD}"
+      Authentication__Google__ClientId: "${GOOGLE_CLIENT_ID}"
+      Authentication__Google__ClientSecret: "${GOOGLE_CLIENT_SECRET}"
+      FCM__CredentialsPath: "${FCM_CREDENTIALS_PATH}"
+      FCM__ProjectId: "${FCM_PROJECT_ID}"
+      BaseURL: "${BASE_URL}"
+      Frontend__BaseUrl: "${FRONTEND_BASE_URL}"
+      ASPNETCORE_URLS: "${ASPNETCORE_URLS}"
+    volumes:
+      - ./Ironer/firebase-credentials.json:/app/firebase-credentials.json:ro
+    networks:
+      - ironer-network
+    restart: unless-stopped
+
+  db:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: ironer-sql
+    environment:
+      SA_PASSWORD: "${DB_PASSWORD}"
+      ACCEPT_EULA: "Y"
+      MSSQL_PID: "Express"
+    ports:
+      - "${DB_PORT}:1433"
+    volumes:
+      - sql_data:/var/opt/mssql
+    networks:
+      - ironer-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P ${DB_PASSWORD} -Q 'SELECT 1' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s  
+
+volumes:
+  sql_data:
+
+networks:
+  ironer-network:
+    driver: bridge

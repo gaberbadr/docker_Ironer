@@ -1,0 +1,6 @@
+@Ironer_HostAddress = http://localhost:5105
+
+GET {{Ironer_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
