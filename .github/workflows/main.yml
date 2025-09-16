@@ -1,1 +1,276 @@
+name: Build and Deploy to Docker Hub
 
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  release:
+    types: [ published ]
+
+env:
+  REGISTRY: docker.io
+  IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/${{ secrets.DOCKERHUB_REPOSITORY }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Log in to Docker Hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+    - name: Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.IMAGE_NAME }}
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=semver,pattern={{version}}
+          type=semver,pattern={{major}}.{{minor}}
+          type=raw,value=latest,enable={{is_default_branch}}
+
+    - name: Create Firebase credentials from secret
+      run: |
+        mkdir -p Ironer
+        echo '${{ secrets.FIREBASE_CREDENTIALS_JSON }}' > Ironer/firebase-credentials.json
+
+    - name: Create production appsettings.json with secrets
+      run: |
+        cat > Ironer/appsettings.Production.json << 'EOF'
+        {
+          "ConnectionStrings": {
+            "DefaultConnection": "Data Source=ironer.db"
+          },
+          "JWT": {
+            "Key": "${{ secrets.JWT_KEY }}",
+            "Issuer": "${{ secrets.JWT_ISSUER }}",
+            "Audience": "${{ secrets.JWT_AUDIENCE }}",
+            "AccessTokenExpirationMinutes": 15,
+            "RefreshTokenExpirationDays": 7
+          },
+          "Smtp": {
+            "Host": "smtp.gmail.com",
+            "Port": 587,
+            "Email": "${{ secrets.SMTP_EMAIL }}",
+            "Password": "${{ secrets.SMTP_PASSWORD }}"
+          },
+          "Authentication": {
+            "Google": {
+              "ClientId": "${{ secrets.GOOGLE_CLIENT_ID }}",
+              "ClientSecret": "${{ secrets.GOOGLE_CLIENT_SECRET }}"
+            }
+          },
+          "FCM": {
+            "CredentialsPath": "firebase-credentials.json",
+            "ProjectId": "${{ secrets.FCM_PROJECT_ID }}"
+          },
+          "Logging": {
+            "LogLevel": {
+              "Default": "Information",
+              "Microsoft.AspNetCore": "Warning"
+            }
+          },
+          "AllowedHosts": "*",
+          "BaseURL": "http://localhost:5000/",
+          "Frontend": {
+            "BaseUrl": "http://127.0.0.1:5500"
+          }
+        }
+        EOF
+
+    - name: Create self-contained Dockerfile
+      run: |
+        cat > Dockerfile << 'EOF'
+        # Build stage
+        FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
+        WORKDIR /src
+
+        # Copy project files in dependency order
+        COPY CoreLayer/*.csproj ./CoreLayer/
+        COPY RepositoryLayer/*.csproj ./RepositoryLayer/
+        COPY ServiceLayer/*.csproj ./ServiceLayer/
+        COPY Ironer/*.csproj ./Ironer/
+
+        # Add SQLite package
+        WORKDIR /src/Ironer
+        RUN dotnet add package Microsoft.EntityFrameworkCore.Sqlite
+
+        # Restore dependencies
+        RUN dotnet restore
+
+        # Copy everything else
+        WORKDIR /src
+        COPY . .
+
+        # Publish
+        WORKDIR /src/Ironer
+        RUN dotnet publish -c Release -o /app/publish
+
+        # Runtime stage
+        FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS runtime
+        WORKDIR /app
+
+        # Copy published app
+        COPY --from=build /app/publish .
+
+        # Create directories
+        RUN mkdir -p /app/data /app/wwwroot/files
+
+        # Set environment variables
+        ENV ASPNETCORE_ENVIRONMENT=Production
+        ENV ASPNETCORE_URLS=http://+:8080
+
+        # Expose port
+        EXPOSE 8080
+
+        # Create startup script with nice messages
+        RUN echo '#!/bin/bash\n\
+        echo " Starting Ironer API..."\n\
+        echo " API will be available at: http://localhost:5000 (when mapped)"\n\
+        echo " Swagger UI: http://localhost:5000/swagger"\n\
+        echo " Using embedded SQLite database"\n\
+        echo " Ready to accept requests!"\n\
+        echo ""\n\
+        exec dotnet Ironer.dll' > /app/start.sh && chmod +x /app/start.sh
+
+        ENTRYPOINT ["/app/start.sh"]
+        EOF
+
+    - name: Build and push Docker image
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ./Dockerfile
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+  create-readme:
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    steps:
+    - name: Create simple deployment instructions
+      run: |
+        mkdir -p deployment
+        
+        cat > deployment/README.md << 'EOF'
+        #  Ironer API - One Command Setup
+
+        ## Quick Start
+
+        ```bash
+        docker run -d -p 5000:8080 --name ironer-api gaberbadr1/docker_ironer:latest
+        ```
+
+        **That's it!** 
+
+        ## Access Your API
+
+        - **API Base**: http://localhost:5000
+        - **Swagger UI**: http://localhost:5000/swagger
+        - **Health Check**: http://localhost:5000/health
+
+        ## Features Included
+
+         Complete REST API  
+         Built-in SQLite database  
+         JWT Authentication  
+         Email integration  
+         File upload support  
+         Rate limiting  
+         CORS enabled  
+         Swagger documentation  
+
+        ## Commands
+
+        **Start:**
+        ```bash
+        docker run -d -p 5000:8080 --name ironer-api gaberbadr1/docker_ironer:latest
+        ```
+
+        **Stop:**
+        ```bash
+        docker stop ironer-api
+        ```
+
+        **View logs:**
+        ```bash
+        docker logs ironer-api -f
+        ```
+
+        **Restart:**
+        ```bash
+        docker restart ironer-api
+        ```
+
+        **Remove:**
+        ```bash
+        docker stop ironer-api && docker rm ironer-api
+        ```
+
+        **Update to latest:**
+        ```bash
+        docker pull gaberbadr1/docker_ironer:latest
+        docker stop ironer-api && docker rm ironer-api
+        docker run -d -p 5000:8080 --name ironer-api gaberbadr1/docker_ironer:latest
+        ```
+
+        ## Persist Data (Optional)
+
+        To keep your data between container restarts:
+
+        ```bash
+        docker run -d -p 5000:8080 -v ironer-data:/app/data --name ironer-api gaberbadr1/docker_ironer:latest
+        ```
+
+        ## Custom Port
+
+        To use a different port (e.g., 8080):
+
+        ```bash
+        docker run -d -p 8080:8080 --name ironer-api gaberbadr1/docker_ironer:latest
+        ```
+
+        ## Troubleshooting
+
+        **Port already in use?**
+        Change the first port number: `-p 5001:8080`
+
+        **Check if running:**
+        ```bash
+        docker ps
+        ```
+
+        **Container won't start?**
+        ```bash
+        docker logs ironer-api
+        ```
+
+        ## Need SQL Server Instead?
+
+        For production environments with SQL Server, use docker-compose from the repository.
+        EOF
+
+    - name: Upload deployment instructions
+      uses: actions/upload-artifact@v4
+      with:
+        name: deployment-instructions
+        path: deployment/
+        retention-days: 90
