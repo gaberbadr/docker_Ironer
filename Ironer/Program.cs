@@ -38,15 +38,15 @@ namespace Ironer
 
             // Get connection string and determine database type
             var connectionString = builder.Configuration.GetConnectionString("DefaultConnection");
-            var useSqlite = string.IsNullOrEmpty(connectionString) || connectionString.Contains("Server=db") || connectionString.Contains("Server=.");
+            var useSqlite = string.IsNullOrEmpty(connectionString) || connectionString.Contains("Data Source=") || connectionString.Contains("ironer.db");
 
-            // Use SQLite for standalone container, SQL Server for development/docker-compose
-            if (builder.Environment.IsProduction())
+            // Use SQLite for standalone container or when explicitly configured, SQL Server for development/docker-compose
+            if (builder.Environment.IsProduction() || useSqlite)
             {
-                // In production, try SQL Server first, fallback to SQLite
-                try
+                // In production or when SQLite is configured, try SQL Server first, fallback to SQLite
+                if (!useSqlite && !string.IsNullOrEmpty(connectionString) && !connectionString.Contains("Data Source="))
                 {
-                    if (!string.IsNullOrEmpty(connectionString) && !connectionString.Contains("Data Source="))
+                    try
                     {
                         using var testConnection = new Microsoft.Data.SqlClient.SqlConnection(connectionString);
                         await testConnection.OpenAsync();
@@ -55,15 +55,22 @@ namespace Ironer
                         builder.Services.AddDbContext<AppDbContext>(options =>
                             options.UseSqlServer(connectionString));
                     }
-                    else
+                    catch
                     {
-                        throw new Exception("Use SQLite fallback");
+                        // SQL Server not available, use SQLite fallback
+                        var sqliteConnectionString = connectionString ?? "Data Source=/app/data/ironer.db";
+                        if (!sqliteConnectionString.Contains("Data Source="))
+                        {
+                            sqliteConnectionString = "Data Source=/app/data/ironer.db";
+                        }
+                        builder.Services.AddDbContext<AppDbContext>(options =>
+                            options.UseSqlite(sqliteConnectionString));
                     }
                 }
-                catch
+                else
                 {
-                    // SQL Server not available, use SQLite
-                    var sqliteConnectionString = "Data Source=ironer.db";
+                    // Use SQLite directly
+                    var sqliteConnectionString = connectionString ?? "Data Source=/app/data/ironer.db";
                     builder.Services.AddDbContext<AppDbContext>(options =>
                         options.UseSqlite(sqliteConnectionString));
                 }
@@ -194,20 +201,63 @@ namespace Ironer
             var services = scope.ServiceProvider;
             var context = services.GetRequiredService<AppDbContext>();
             var LoggerFactory = services.GetRequiredService<ILoggerFactory>();
+            var logger = LoggerFactory.CreateLogger<Program>();
             var usermanger = services.GetRequiredService<UserManager<ApplicationUser>>();
 
             try
             {
+                logger.LogInformation("🔄 Starting database migration...");
+
+                // For SQLite, ensure directory exists
+                var contextConnectionString = context.Database.GetConnectionString();
+                if (contextConnectionString != null && contextConnectionString.Contains("Data Source="))
+                {
+                    var dbPath = contextConnectionString.Replace("Data Source=", "").Split(';')[0];
+                    var directory = Path.GetDirectoryName(dbPath);
+                    if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
+                    {
+                        Directory.CreateDirectory(directory);
+                        logger.LogInformation($"📁 Created database directory: {directory}");
+                    }
+                }
+
+                // Ensure database is created and migrations are applied
+                await context.Database.EnsureCreatedAsync();
                 await context.Database.MigrateAsync();
+
+                logger.LogInformation("✅ Database migration completed successfully");
+
+                // Seed roles and users
+                logger.LogInformation("🌱 Starting data seeding...");
                 var roleManager = services.GetRequiredService<RoleManager<IdentityRole>>();
                 IUnitOfWork _unitOfWork = services.GetRequiredService<IUnitOfWork>();
                 await IdentitySeeder.SeedAppUserAsync(usermanger, roleManager, _unitOfWork);
+
+                logger.LogInformation("✅ Data seeding completed successfully");
             }
             catch (Exception ex)
             {
-                var logger = LoggerFactory.CreateLogger<Program>();
-                logger.LogError(ex, "Problem during migration, continuing with existing database");
-                // Don't throw - continue running even if migration fails
+                logger.LogError(ex, "❌ Error during database initialization: {ErrorMessage}", ex.Message);
+
+                // Try alternative initialization for SQLite
+                try
+                {
+                    logger.LogInformation("🔄 Attempting alternative database initialization...");
+                    await context.Database.EnsureCreatedAsync();
+                    logger.LogInformation("✅ Alternative database initialization succeeded");
+
+                    // Try seeding again
+                    var roleManager = services.GetRequiredService<RoleManager<IdentityRole>>();
+                    IUnitOfWork _unitOfWork = services.GetRequiredService<IUnitOfWork>();
+                    await IdentitySeeder.SeedAppUserAsync(usermanger, roleManager, _unitOfWork);
+                    logger.LogInformation("✅ Data seeding completed on retry");
+                }
+                catch (Exception innerEx)
+                {
+                    logger.LogError(innerEx, "❌ Alternative database initialization also failed: {ErrorMessage}", innerEx.Message);
+                    logger.LogWarning("⚠️ Continuing startup without database initialization - manual setup may be required");
+                    // Don't throw - continue running even if initialization fails
+                }
             }
 
             // Configure the HTTP request pipeline.

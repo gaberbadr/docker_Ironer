@@ -8,20 +8,23 @@ COPY RepositoryLayer/*.csproj ./RepositoryLayer/
 COPY ServiceLayer/*.csproj ./ServiceLayer/
 COPY Ironer/*.csproj ./Ironer/
 
-# Add SQLite package to your main project
+# Add SQLite package
 WORKDIR /src/Ironer
 RUN dotnet add package Microsoft.EntityFrameworkCore.Sqlite
 
-# Restore dependencies for main project
+# Restore dependencies
 RUN dotnet restore
 
 # Copy everything else
 WORKDIR /src
 COPY . .
 
-# Publish from main project
+# Build the project
 WORKDIR /src/Ironer
-RUN dotnet publish -c Release -o /app/publish
+RUN dotnet build -c Release --no-restore
+
+# Publish
+RUN dotnet publish -c Release -o /app/publish --no-build
 
 # Runtime stage
 FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS runtime
@@ -30,32 +33,45 @@ WORKDIR /app
 # Copy published app
 COPY --from=build /app/publish .
 
-# Create directories for database and files
-RUN mkdir -p /app/data /app/wwwroot/files
+# Create directories with proper permissions
+RUN mkdir -p /app/data /app/wwwroot/files && \
+    chmod -R 755 /app/data /app/wwwroot/files
 
-# Set environment variables for standalone mode
+# Set environment variables
 ENV ASPNETCORE_ENVIRONMENT=Production
 ENV ASPNETCORE_URLS=http://+:8080
-ENV ConnectionStrings__DefaultConnection=""
-ENV JWT__Key=DefaultKeyForDevelopmentOnlyNotForProduction123
-ENV JWT__Issuer=http://localhost:5000/
-ENV JWT__Audience=IronerAPI
+ENV ConnectionStrings__DefaultConnection="Data Source=/app/data/ironer.db"
 
 # Expose port
 EXPOSE 8080
 
+# Create startup script that ensures database is properly initialized
+RUN echo '#!/bin/bash' > /app/start.sh && \
+    echo 'set -e' >> /app/start.sh && \
+    echo '' >> /app/start.sh && \
+    echo 'echo " Starting Ironer API..."' >> /app/start.sh && \
+    echo 'echo " Initializing SQLite database..."' >> /app/start.sh && \
+    echo '' >> /app/start.sh && \
+    echo '# Ensure data directory exists and has proper permissions' >> /app/start.sh && \
+    echo 'mkdir -p /app/data' >> /app/start.sh && \
+    echo 'chmod 755 /app/data' >> /app/start.sh && \
+    echo '' >> /app/start.sh && \
+    echo '# Set the connection string to use our data directory' >> /app/start.sh && \
+    echo 'export ConnectionStrings__DefaultConnection="Data Source=/app/data/ironer.db"' >> /app/start.sh && \
+    echo '' >> /app/start.sh && \
+    echo 'echo " Starting application with automatic migrations..."' >> /app/start.sh && \
+    echo 'echo " Database will be created at: /app/data/ironer.db"' >> /app/start.sh && \
+    echo 'echo " API will be available at: http://localhost:5000 (when mapped)"' >> /app/start.sh && \
+    echo 'echo " Swagger UI: http://localhost:5000/swagger"' >> /app/start.sh && \
+    echo 'echo " Ready to accept requests!"' >> /app/start.sh && \
+    echo 'echo ""' >> /app/start.sh && \
+    echo '' >> /app/start.sh && \
+    echo '# Start the application - migrations will run automatically in Program.cs' >> /app/start.sh && \
+    echo 'exec dotnet Ironer.dll' >> /app/start.sh && \
+    chmod +x /app/start.sh
+
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
     CMD curl -f http://localhost:8080/health || exit 1
-
-# Create a startup script
-RUN echo '#!/bin/bash\n\
-echo " Starting Ironer API..."\n\
-echo " API will be available at: http://localhost:5000 (when mapped)"\n\
-echo " Swagger UI: http://localhost:5000/swagger"\n\
-echo " Using embedded SQLite database"\n\
-echo " Ready to accept requests!"\n\
-echo ""\n\
-exec dotnet Ironer.dll' > /app/start.sh && chmod +x /app/start.sh
 
 ENTRYPOINT ["/app/start.sh"]
