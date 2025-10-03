@@ -5,6 +5,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    container_name: ironer-api
     ports:
       - "${API_PORT:-5000}:8080"
     depends_on:
@@ -26,7 +27,7 @@ services:
       FIREBASE_CREDENTIALS_BASE64: "${FIREBASE_CREDENTIALS_BASE64}"
       BaseURL: "${BaseURL}"
       Frontend__BaseUrl: "${Frontend__BaseUrl}"
-      ASPNETCORE_URLS: "${ASPNETCORE_URLS}"
+      ASPNETCORE_URLS: "http://+:8080"
     volumes:
       - api_files:/app/wwwroot/files
     networks:
@@ -50,7 +51,9 @@ services:
 
 volumes:
   sql_data:
+    driver: local
   api_files:
+    driver: local
 
 networks:
   ironer-network:
