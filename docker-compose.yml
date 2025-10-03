@@ -1,0 +1,57 @@
+version: '3.8'
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "${API_PORT:-5000}:8080"
+    depends_on:
+      - db  
+    environment:
+      ConnectionStrings__DefaultConnection: "${ConnectionStrings__DefaultConnection}"
+      JWT__Key: "${JWT__Key}"
+      JWT__Issuer: "${JWT__Issuer}"
+      JWT__Audience: "${JWT__Audience}"
+      JWT__AccessTokenExpirationMinutes: "${JWT__AccessTokenExpirationMinutes}"
+      JWT__RefreshTokenExpirationDays: "${JWT__RefreshTokenExpirationDays}"
+      SMTP__Host: "${SMTP__Host}"
+      SMTP__Port: "${SMTP__Port}"
+      SMTP__Email: "${SMTP__Email}"
+      SMTP__Password: "${SMTP__Password}"
+      Authentication__Google__ClientId: "${Authentication__Google__ClientId}"
+      Authentication__Google__ClientSecret: "${Authentication__Google__ClientSecret}"
+      FCM__ProjectId: "${FCM__ProjectId}"
+      FIREBASE_CREDENTIALS_BASE64: "${FIREBASE_CREDENTIALS_BASE64}"
+      BaseURL: "${BaseURL}"
+      Frontend__BaseUrl: "${Frontend__BaseUrl}"
+      ASPNETCORE_URLS: "${ASPNETCORE_URLS}"
+    volumes:
+      - api_files:/app/wwwroot/files
+    networks:
+      - ironer-network
+    restart: unless-stopped
+
+  db:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: ironer-sql
+    environment:
+      SA_PASSWORD: "${DB_PASSWORD:-Your_password123}"
+      ACCEPT_EULA: "Y"
+      MSSQL_PID: "Express"
+    ports:
+      - "${DB_PORT:-1433}:1433"
+    volumes:
+      - sql_data:/var/opt/mssql
+    networks:
+      - ironer-network
+    restart: unless-stopped
+
+volumes:
+  sql_data:
+  api_files:
+
+networks:
+  ironer-network:
+    driver: bridge
